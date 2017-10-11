@@ -1,0 +1,767 @@
+diff --git a/.gitignore b/.gitignore
+index 0c39aa2..9330c8b 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -115,3 +115,17 @@ all.config
+ 
+ # Kdevelop4
+ *.kdev4
++--- .gitignore
+++++ .gitignore
++@@ -96,3 +96,11 @@ x509.genkey
++ 
++ # Kconfig presets
++ all.config
++
++# sh4 asm
++arch/sh/boot/compressed/ashiftrt.S
++arch/sh/boot/compressed/ashldi3.c
++arch/sh/boot/compressed/ashlsi3.S
++arch/sh/boot/compressed/ashrsi3.S
++arch/sh/boot/compressed/lshrsi3.S
++
+diff --git a/Makefile b/Makefile
+index 189f1a7..f9548c8 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1,7 +1,7 @@
+ VERSION = 4
+ PATCHLEVEL = 13
+ SUBLEVEL = 5
+-EXTRAVERSION =
++EXTRAVERSION = -landisk
+ NAME = Fearless Coyote
+ 
+ # *DOCUMENTATION*
+diff --git a/arch/sh/kernel/ioport.c b/arch/sh/kernel/ioport.c
+index cca14ba..d30d83c 100644
+--- a/arch/sh/kernel/ioport.c
++++ b/arch/sh/kernel/ioport.c
+@@ -19,6 +19,10 @@ void __iomem *__ioport_map(unsigned long addr, unsigned int size)
+ 	if (sh_mv.mv_ioport_map)
+ 		return sh_mv.mv_ioport_map(addr, size);
+ 
++	/* Don't use sh_io_port_base */
++	if (sh_io_port_base == -1)
++		return (void __iomem *)addr;
++
+ 	return (void __iomem *)(addr + sh_io_port_base);
+ }
+ EXPORT_SYMBOL(__ioport_map);
+diff --git a/arch/sh/mm/consistent.c b/arch/sh/mm/consistent.c
+index d1275ad..29c924c 100644
+--- a/arch/sh/mm/consistent.c
++++ b/arch/sh/mm/consistent.c
+@@ -84,7 +84,7 @@ void dma_cache_sync(struct device *dev, void *vaddr, size_t size,
+ 	void *addr;
+ 
+ 	addr = __in_29bit_mode() ?
+-	       (void *)CAC_ADDR((unsigned long)vaddr) : vaddr;
++		(void *)P1SEGADDR((unsigned long)vaddr) : vaddr;
+ 
+ 	switch (direction) {
+ 	case DMA_FROM_DEVICE:		/* invalidate only */
+diff --git a/drivers/ata/pata_artop.c b/drivers/ata/pata_artop.c
+index 96c05c9..7dfd5bd 100644
+--- a/drivers/ata/pata_artop.c
++++ b/drivers/ata/pata_artop.c
+@@ -398,11 +398,18 @@ static int artop_init_one (struct pci_dev *pdev, const struct pci_device_id *id)
+ 	else if (id->driver_data == 1)	/* 6260 */
+ 		ppi[0] = &info_626x;
+ 	else if (id->driver_data == 2)	{ /* 6280 or 6280 + fast */
+-		unsigned long io = pci_resource_start(pdev, 4);
++                void __iomem *iomem;
++                u8 reg;
+ 
+-		ppi[0] = &info_628x;
+-		if (inb(io) & 0x10)
+-			ppi[0] = &info_628x_fast;
++                iomem = pci_iomap(pdev, 4, 0x0);
++                if ( iomem == NULL )
++                        return -ENOMEM;
++
++                ppi[0] = &info_628x;
++                if ( ioread8(iomem) & 0x10 )
++                        ppi[0] = &info_628x_fast;
++
++                pci_iounmap(pdev, iomem);
+ 	}
+ 
+ 	BUG_ON(ppi[0] == NULL);
+diff --git a/drivers/leds/Kconfig b/drivers/leds/Kconfig
+index 594b24d..21d0303 100644
+--- a/drivers/leds/Kconfig
++++ b/drivers/leds/Kconfig
+@@ -676,7 +676,40 @@ config LEDS_NIC78BX
+ 	  To compile this driver as a module, choose M here: the module
+ 	  will be called leds-nic78bx.
+ 
++config LEDS_LANDISK
++	tristate "LED Support for LANDISK Series"
++	depends on LEDS_CLASS && SH_LANDISK
++	help
++	  This option enables support for the LED on LANDISK Series
++
+ comment "LED Triggers"
+ source "drivers/leds/trigger/Kconfig"
+ 
++config LEDS_TRIGGER_BITPAT
++        tristate "LED Bitpattern Trigger"
++        depends on LEDS_TRIGGERS
++        help
++          LED trigger "bitpat"  continuously turns LED on and off
++          according to the value directed "bitdata".
++          "bitdata" is composed of three characters of '0', '1', and 'R'.
++          '0' turn off LED. '1' turn on LED.
++          'R' is repeated from the head of the "bitdata".
++
++            ex.1) LED off
++            # echo 0   > /sys/class/leds/LED/bitdata
++
++            ex.2) LED on
++            # echo 1   > /sys/class/leds/LED/bitdata
++
++            ex.3) LED is blinked simply.
++            # echo 10R > /sys/class/leds/LED/bitdata
++
++            ex.4) LED is blinked twice and stop. It is repeated forever.
++            # echo 10100000R > /sys/class/leds/LED/bitdata
++
++          In addition, string of "on", "off", and "blink"
++          can be set to "bitdata".
++          The transition time of "bitdata" is set by "delay".
++          If unsure, say Y.
++
+ endif # NEW_LEDS
+diff --git a/drivers/leds/Makefile b/drivers/leds/Makefile
+index 909dae6..3510255 100644
+--- a/drivers/leds/Makefile
++++ b/drivers/leds/Makefile
+@@ -57,6 +57,7 @@ obj-$(CONFIG_LEDS_MC13783)		+= leds-mc13783.o
+ obj-$(CONFIG_LEDS_NS2)			+= leds-ns2.o
+ obj-$(CONFIG_LEDS_NETXBIG)		+= leds-netxbig.o
+ obj-$(CONFIG_LEDS_ASIC3)		+= leds-asic3.o
++obj-$(CONFIG_LEDS_LANDISK)		+= leds-landisk.o
+ obj-$(CONFIG_LEDS_MAX77693)		+= leds-max77693.o
+ obj-$(CONFIG_LEDS_MAX8997)		+= leds-max8997.o
+ obj-$(CONFIG_LEDS_LM355x)		+= leds-lm355x.o
+diff --git a/drivers/leds/led-triggers.c b/drivers/leds/led-triggers.c
+index 431123b..0f1f657 100644
+--- a/drivers/leds/led-triggers.c
++++ b/drivers/leds/led-triggers.c
+@@ -9,6 +9,8 @@
+  * it under the terms of the GNU General Public License version 2 as
+  * published by the Free Software Foundation.
+  *
++ * 2011.04.15 forester3
++ * changed for leds-landisk.c and ledtrig-bitpat.c 
+  */
+ 
+ #include <linux/export.h>
+@@ -52,6 +54,8 @@ ssize_t led_trigger_store(struct device *dev, struct device_attribute *attr,
+ 	down_read(&triggers_list_lock);
+ 	list_for_each_entry(trig, &trigger_list, next_trig) {
+ 		if (sysfs_streq(buf, trig->name)) {
++                       if (trig->is_led_supported &&
++                           !trig->is_led_supported(led_cdev)) break;
+ 			down_write(&led_cdev->trigger_lock);
+ 			led_trigger_set(led_cdev, trig);
+ 			up_write(&led_cdev->trigger_lock);
+@@ -90,6 +94,8 @@ ssize_t led_trigger_show(struct device *dev, struct device_attribute *attr,
+ 							trig->name))
+ 			len += scnprintf(buf+len, PAGE_SIZE - len, "[%s] ",
+ 					 trig->name);
++                else if (trig->is_led_supported &&
++                         !trig->is_led_supported(led_cdev)) continue;
+ 		else
+ 			len += scnprintf(buf+len, PAGE_SIZE - len, "%s ",
+ 					 trig->name);
+@@ -215,7 +221,9 @@ int led_trigger_register(struct led_trigger *trig)
+ 	list_for_each_entry(led_cdev, &leds_list, node) {
+ 		down_write(&led_cdev->trigger_lock);
+ 		if (!led_cdev->trigger && led_cdev->default_trigger &&
+-			    !strcmp(led_cdev->default_trigger, trig->name))
++                    !strcmp(led_cdev->default_trigger, trig->name) &&
++                    (!trig->is_led_supported ||
++                     trig->is_led_supported(led_cdev) )               )
+ 			led_trigger_set(led_cdev, trig);
+ 		up_write(&led_cdev->trigger_lock);
+ 	}
+diff --git a/drivers/leds/leds-landisk.c b/drivers/leds/leds-landisk.c
+new file mode 100644
+index 0000000..0099fb8
+--- /dev/null
++++ b/drivers/leds/leds-landisk.c
+@@ -0,0 +1,278 @@
++/*
++ * LEDs driver for I-O DATA DEVICE, INC. "LANDISK Series" support.
++ *
++ * 2011.05.04 forester3
++ * -- change pwr and status leds pattern on init
++ * 2011.04.15 forester3
++ * -- Recovering bitpat trigger
++ *
++ * Copyright (C) 2011 Daniel Palmer <me@danielpalmer.co.uk>
++ * -- Updated methods used to read/write bytes to the CPLD 
++ * -- Fixed bits and bobs to make it build as an external module
++ * -- Fixed registeration of LEDs 
++ *
++ * Copyright (C) 2007 kogiidena
++ *
++ * Based on the drivers/leds/leds-ams-delta.c by:
++ * Copyright (C) 2006 Jonathan McDowell
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/leds.h>
++
++
++#include <asm/io.h>
++#include <mach-landisk/mach/iodata_landisk.h>
++
++static enum {
++       LANDISK = 0,
++       USL_5P  = 1,
++} landisk_product;
++
++static DEFINE_SPINLOCK(landisk_led_lock);
++
++static void landisk_led_set(struct led_classdev *led_cdev,
++                            enum led_brightness value);
++
++static struct led_classdev landisk_leds[] = {
++       [0] = {
++              .name = "power",
++              .brightness_set = landisk_led_set,
++              .default_trigger = "bitpat",
++              },
++       [1] = {
++              .name = "status",
++              .brightness_set = landisk_led_set,
++              .default_trigger = "bitpat",
++              },
++       [2] = {
++              .name = "led1",
++              .brightness_set = landisk_led_set,
++              .default_trigger = "bitpat",
++              },
++       [3] = {
++              .name = "led2",
++              .brightness_set = landisk_led_set,
++              .default_trigger = "bitpat",
++              },
++       [4] = {
++              .name = "led3",
++              .brightness_set = landisk_led_set,
++              .default_trigger = "bitpat",
++              },
++       [5] = {
++              .name = "led4",
++              .brightness_set = landisk_led_set,
++              .default_trigger = "bitpat",
++              },
++       [6] = {
++              .name = "led5",
++              .brightness_set = landisk_led_set,
++              .default_trigger = "bitpat",
++              },
++       [7] = {
++              .name = "buzzer",
++              .brightness_set = landisk_led_set,
++              .default_trigger = "bitpat",
++              },
++};
++
++void ledtrig_bitpat_default(struct led_classdev *led_cdev,
++                           unsigned long *delay, char *bitdata)
++{
++	int led;
++
++	led = (led_cdev - &landisk_leds[0]);
++
++	if( led == 0 )
++	{
++		strcpy(bitdata, "001010R");
++	}
++	else if( led == 1 )
++	{
++		strcpy(bitdata, "101000R");
++	}
++
++	if (led == 7) {
++               *delay = 250;
++	}
++}
++
++static void landisk_led_set(struct led_classdev *led_cdev,
++                           enum led_brightness value)
++{
++
++
++
++       u8 tmp, bitmask;
++       unsigned long flags;
++
++       bitmask = 0x01 << (led_cdev - &landisk_leds[0]);
++
++       spin_lock_irqsave(&landisk_led_lock, flags);
++       tmp = __raw_readb(PA_LED);
++
++       if (value) {
++               tmp |= bitmask;
++       }
++       else {
++               tmp &= ~bitmask;
++       }
++	
++	__raw_writeb(tmp,PA_LED);
++
++       spin_unlock_irqrestore(&landisk_led_lock, flags);
++}
++
++
++
++
++static int landisk_led_probe(struct platform_device *pdev)
++{
++
++	printk("landisk_led_probe()\n");
++
++
++       int i, nr_leds;
++       int ret;
++
++       nr_leds = (landisk_product == LANDISK) ? 2 : 8;
++
++       for (i = ret = 0; ret >= 0 && i < nr_leds; i++) {
++		printk(" registering led \n");
++               ret = led_classdev_register(&pdev->dev, &landisk_leds[i]);
++       }
++
++       if (ret < 0 && i > 1) {
++               nr_leds = i - 1;
++               for (i = 0; i < nr_leds; i++)
++                       led_classdev_unregister(&landisk_leds[i]);
++       }
++       return ret;
++}
++
++static int landisk_led_remove(struct platform_device *pdev)
++{
++
++       printk("landisk_led_remove()\n");
++
++       int i, nr_leds;
++
++       nr_leds = (landisk_product == LANDISK) ? 2 : 8;
++
++       for (i = 0; i < nr_leds; i++) {
++               led_classdev_unregister(&landisk_leds[i]);
++       }
++       return 0;
++}
++
++
++static struct platform_driver landisk_led_driver = {
++       .probe = landisk_led_probe,
++       .remove = landisk_led_remove,
++       .driver = {
++                  .name = KBUILD_MODNAME,
++		  .owner  = THIS_MODULE,  
++                },
++};
++
++/* HDD-access-LED setting at landisk status LED */
++
++static void landisk_disk_trig_activate(struct led_classdev *led_cdev)
++{
++       unsigned long flags;
++       spin_lock_irqsave(&landisk_led_lock, flags);
++       __raw_writeb((__raw_readb(PA_LED) & ~0x0c) | 0x04,PA_LED);
++	spin_unlock_irqrestore(&landisk_led_lock, flags);
++}
++
++static void landisk_disk_trig_deactivate(struct led_classdev *led_cdev)
++{
++       unsigned long flags;
++       spin_lock_irqsave(&landisk_led_lock, flags);
++       __raw_writeb((__raw_readb(PA_LED) & ~0x0c) | 0x0c,PA_LED);
++       spin_unlock_irqrestore(&landisk_led_lock, flags);
++}
++
++static int landisk_disk_trig_is_led_supported(struct led_classdev *led_cdev)
++{
++       int led;
++
++       led = (led_cdev - &landisk_leds[0]);
++       return ((landisk_product == LANDISK) && (led == 1));
++}
++
++static struct led_trigger landisk_disk_led_trigger = {
++       .name = "disk",
++       .activate = landisk_disk_trig_activate,
++       .deactivate = landisk_disk_trig_deactivate,
++       .is_led_supported = landisk_disk_trig_is_led_supported,
++};
++
++static struct platform_device *pdev;
++
++
++static int __init landisk_led_init(void)
++{
++
++	printk("landisk_led_init()\n");
++
++       u8 orig, test;
++       int err = 0;
++
++       orig = __raw_readb(PA_LED);
++       __raw_writeb(0x40,PA_LED);
++
++
++       test = __raw_readb(PA_LED);
++       __raw_writeb(orig,PA_LED);
++
++       if (test != 0x40) {
++	       printk("hardware is LANDISK\n");
++               landisk_product = LANDISK;
++               __raw_writeb(orig | 0x07,PA_LED);
++	       landisk_leds[1].default_trigger = "disk";
++       } else {
++               printk("hardware is USL-5P\n");
++               landisk_product = USL_5P;
++               __raw_writeb(orig | 0x03,PA_LED);
++       }
++
++       err = led_trigger_register(&landisk_disk_led_trigger);
++       if (err)
++              return err;
++
++	pdev = platform_device_register_simple(KBUILD_MODNAME, -1, NULL, 0);
++        if (!IS_ERR(pdev)) {
++                err = platform_driver_probe(&landisk_led_driver, landisk_led_probe);
++                if (err)
++                        platform_device_unregister(pdev);
++        } else
++                err = PTR_ERR(pdev);
++
++       //err = platform_driver_register(&landisk_led_driver);
++
++	printk("error - %x\n", err);
++
++	return err;
++}
++
++static void __exit landisk_led_exit(void)
++{
++       led_trigger_unregister(&landisk_disk_led_trigger);
++       platform_driver_unregister(&landisk_led_driver);
++}
++
++
++module_init(landisk_led_init);
++module_exit(landisk_led_exit);
++
++MODULE_ALIAS("platform:landisk-leds");
++MODULE_AUTHOR("kogiidena");
++MODULE_DESCRIPTION("landisk LED driver");
++MODULE_LICENSE("GPL");
+diff --git a/drivers/leds/trigger/Makefile b/drivers/leds/trigger/Makefile
+index a72c43c..3ccdedf 100644
+--- a/drivers/leds/trigger/Makefile
++++ b/drivers/leds/trigger/Makefile
+@@ -7,6 +7,7 @@ obj-$(CONFIG_LEDS_TRIGGER_BACKLIGHT)	+= ledtrig-backlight.o
+ obj-$(CONFIG_LEDS_TRIGGER_GPIO)		+= ledtrig-gpio.o
+ obj-$(CONFIG_LEDS_TRIGGER_CPU)		+= ledtrig-cpu.o
+ obj-$(CONFIG_LEDS_TRIGGER_DEFAULT_ON)	+= ledtrig-default-on.o
++obj-$(CONFIG_LEDS_TRIGGER_BITPAT)       += ledtrig-bitpat.o
+ obj-$(CONFIG_LEDS_TRIGGER_TRANSIENT)	+= ledtrig-transient.o
+ obj-$(CONFIG_LEDS_TRIGGER_CAMERA)	+= ledtrig-camera.o
+ obj-$(CONFIG_LEDS_TRIGGER_PANIC)	+= ledtrig-panic.o
+diff --git a/drivers/leds/trigger/ledtrig-bitpat.c b/drivers/leds/trigger/ledtrig-bitpat.c
+new file mode 100644
+index 0000000..1f1bcae
+--- /dev/null
++++ b/drivers/leds/trigger/ledtrig-bitpat.c
+@@ -0,0 +1,254 @@
++/*
++ * LED Bitpattern Trigger
++ *
++ * Copyright (C) 2007 kogiidena
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++ * 2011.04.15 forester3
++ * renew function calls
++ */
++
++/*
++ * LED trigger "bitpat"  continuously turns LED on and off
++ * according to the value directed "bitdata".
++ * "bitdata" is composed of three characters of '0', '1', and 'R'.
++ * '0' turn off LED. '1' turn on LED.
++ * 'R' is repeated from the head of the "bitdata".
++ *
++ *   ex.1) LED off
++ *   # echo 0   > /sys/class/leds/LED/bitdata
++ *
++ *   ex.2) LED on
++ *   # echo 1   > /sys/class/leds/LED/bitdata
++ *
++ *   ex.3) LED is blinked simply.
++ *   # echo 10R > /sys/class/leds/LED/bitdata
++ *
++ *   ex.4) LED is blinked twice and stop. It is repeated forever.
++ *   # echo 10100000R > /sys/class/leds/LED/bitdata
++ *
++ * In addition, string of "on", "off", and "blink"
++ * can be set to "bitdata".
++ * The transition time of "bitdata" is set by "delay".
++ */
++#include <linux/module.h>
++#include <linux/jiffies.h>
++#include <linux/kernel.h>
++#include <linux/init.h>
++#include <linux/timer.h>
++#include <linux/sched.h>
++#include <linux/leds.h>
++#include <linux/device.h>
++#include <linux/ctype.h>
++#include <linux/slab.h>
++#include <linux/leds.h>
++
++#define BITDATA_LEN 20
++
++struct bitpat_trig_data {
++        unsigned long delay;
++        unsigned long bitdata;
++        int bitdata_len;   /* bitdata length */
++        int bitdata_rep;   /* bitdata repeat flag */
++        int cnt;
++        struct timer_list timer;
++};
++
++void __attribute__ ((weak))
++    ledtrig_bitpat_default(struct led_classdev *led_cdev,
++                       unsigned long *delay, char *bitdata_str)
++{
++        /* Nothing to do. */
++}
++
++static void led_bitpat_function(unsigned long data)
++{
++        struct led_classdev *led_cdev = (struct led_classdev *)data;
++        struct bitpat_trig_data *bitpat_data = led_cdev->trigger_data;
++        unsigned long delay = bitpat_data->delay;
++        unsigned long bitpat;
++
++        bitpat = (bitpat_data->bitdata >> bitpat_data->cnt++) & 0x1;
++        led_set_brightness(led_cdev, (bitpat) ? LED_FULL : LED_OFF);
++
++        if (bitpat_data->cnt >= bitpat_data->bitdata_len) {
++                bitpat_data->cnt = 0;
++                if (bitpat_data->bitdata_rep == 0)
++                        return;
++        }
++
++        mod_timer(&bitpat_data->timer, jiffies + msecs_to_jiffies(delay));
++}
++
++static ssize_t led_delay_show(struct device *dev, struct device_attribute *attr,
++			char *buf)
++{
++        struct led_classdev *led_cdev = dev_get_drvdata(dev);
++        struct bitpat_trig_data *bitpat_data = led_cdev->trigger_data;
++
++        sprintf(buf, "%lu\n", bitpat_data->delay);
++
++        return strlen(buf) + 1;
++}
++
++static ssize_t led_delay_store(struct device *dev, struct device_attribute *attr,
++			const char *buf, size_t size)
++{
++        struct led_classdev *led_cdev = dev_get_drvdata(dev);
++        struct bitpat_trig_data *bitpat_data = led_cdev->trigger_data;
++        int ret = -EINVAL;
++        unsigned long state = simple_strtoul(buf, NULL, 10);
++
++        if (state > 0) {
++                bitpat_data->delay = state;
++                ret = size;
++        }
++        return ret;
++}
++
++static int led_bitdata_update(struct bitpat_trig_data *bitpat_data,
++                              const char *bitdata_str)
++{
++        int i;
++        const char *s;
++        unsigned long bitdata;
++
++        if (!strncmp("on", bitdata_str, 2)) {
++                s = "1";
++        } else if (!strncmp("off", bitdata_str, 3)) {
++                s = "0";
++        } else if (!strncmp("blink", bitdata_str, 5)) {
++                s = "01R";
++        } else {
++                s = bitdata_str;
++        }
++
++        for (i = 0, bitdata = 0; i < BITDATA_LEN; i++) {
++                if ((s[i] == '0') || (s[i] == '1')) {
++                        bitdata |= (((unsigned long)(s[i] - '0')) << i);
++                } else {
++                        break;
++                }
++        }
++
++        if (i > 0) {
++                bitpat_data->bitdata = bitdata;
++                bitpat_data->bitdata_len = i;
++                bitpat_data->bitdata_rep = ((s[i] == 'R') || (s[i] == 'r'));
++                bitpat_data->cnt = 0;
++        }
++        return i;
++}
++
++static ssize_t led_bitdata_show(struct device *dev,  struct device_attribute *attr,
++			char *buf)
++{
++        struct led_classdev *led_cdev = dev_get_drvdata(dev);
++        struct bitpat_trig_data *bitpat_data = led_cdev->trigger_data;
++        int i;
++
++        for (i = 0; i < bitpat_data->bitdata_len; i++) {
++                buf[i] = ((bitpat_data->bitdata >> i) & 0x1) ? '1' : '0';
++        }
++        if (bitpat_data->bitdata_rep)
++                buf[i++] = 'R';
++        buf[i++] = '\n';
++        buf[i++] = '\0';
++
++        return strlen(buf) + 1;
++}
++
++static ssize_t led_bitdata_store(struct device *dev, struct device_attribute *attr,
++				const char *buf, size_t size)
++{
++        struct led_classdev *led_cdev = dev_get_drvdata(dev);
++        struct bitpat_trig_data *bitpat_data = led_cdev->trigger_data;
++
++        if (led_bitdata_update(bitpat_data, buf)) {
++                mod_timer(&bitpat_data->timer, jiffies + 1);
++                return size;
++        }
++        return -EINVAL;
++}
++
++static DEVICE_ATTR(delay, 0644, led_delay_show, led_delay_store);
++static DEVICE_ATTR(bitdata, 0644, led_bitdata_show, led_bitdata_store);
++
++static void bitpat_trig_activate(struct led_classdev *led_cdev)
++{
++        struct bitpat_trig_data *bitpat_data;
++        int rc;
++        char bitdata_str[BITDATA_LEN + 2];
++
++        bitpat_data = kzalloc(sizeof(*bitpat_data), GFP_KERNEL);
++        if (!bitpat_data)
++                return;
++
++        led_cdev->trigger_data = bitpat_data;
++
++        /* initial value */
++        bitpat_data->delay = 500;
++        bitdata_str[0] = '0';
++        bitdata_str[1] = '\0';
++
++        ledtrig_bitpat_default(led_cdev, &bitpat_data->delay, bitdata_str);
++        led_bitdata_update(bitpat_data, bitdata_str);
++
++        rc = device_create_file(led_cdev->dev, &dev_attr_delay);
++        if (rc)
++                goto err_out;
++        rc = device_create_file(led_cdev->dev, &dev_attr_bitdata);
++        if (rc)
++                goto err_out_delay;
++
++        setup_timer(&bitpat_data->timer,
++                    led_bitpat_function, (unsigned long)led_cdev);
++        led_bitpat_function(bitpat_data->timer.data);
++
++        return;
++
++err_out_delay:
++        device_remove_file(led_cdev->dev, &dev_attr_delay);
++err_out:
++        led_cdev->trigger_data = NULL;
++        kfree(bitpat_data);
++}
++
++static void bitpat_trig_deactivate(struct led_classdev *led_cdev)
++{
++        struct bitpat_trig_data *bitpat_data = led_cdev->trigger_data;
++
++        if (bitpat_data) {
++                device_remove_file(led_cdev->dev, &dev_attr_delay);
++                device_remove_file(led_cdev->dev, &dev_attr_bitdata);
++                del_timer_sync(&bitpat_data->timer);
++                kfree(bitpat_data);
++        }
++}
++
++static struct led_trigger bitpat_led_trigger = {
++        .name = "bitpat",
++        .activate = bitpat_trig_activate,
++        .deactivate = bitpat_trig_deactivate,
++};
++
++static int __init bitpat_trig_init(void)
++{
++        led_trigger_register(&bitpat_led_trigger);
++        return 0;
++}
++
++static void __exit bitpat_trig_exit(void)
++{
++        led_trigger_unregister(&bitpat_led_trigger);
++}
++
++module_init(bitpat_trig_init);
++module_exit(bitpat_trig_exit);
++
++MODULE_AUTHOR("kogiidena <kogiidena@eggplant.ddo.jp>");
++MODULE_DESCRIPTION("Bitpattern LED trigger");
++MODULE_LICENSE("GPL");
+diff --git a/include/linux/leds.h b/include/linux/leds.h
+index 64c56d4..45ac34b 100644
+--- a/include/linux/leds.h
++++ b/include/linux/leds.h
+@@ -7,6 +7,9 @@
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License version 2 as
+  * published by the Free Software Foundation.
++ * 
++ * 2011.04.15 forester3
++ * changed for leds-landisk.c and ledtrig-bitpat.c
+  *
+  */
+ #ifndef __LINUX_LEDS_H_INCLUDED
+@@ -254,6 +257,7 @@ struct led_trigger {
+ 	const char	 *name;
+ 	void		(*activate)(struct led_classdev *led_cdev);
+ 	void		(*deactivate)(struct led_classdev *led_cdev);
++        int             (*is_led_supported)(struct led_classdev *led_cdev);
+ 
+ 	/* LEDs under control by this trigger (for simple triggers) */
+ 	rwlock_t	  leddev_list_lock;
